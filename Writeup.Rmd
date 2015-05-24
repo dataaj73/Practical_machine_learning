@@ -1,0 +1,248 @@
+Practical machine learning course assignment
+========================================================
+
+## Introduction
+
+The course assignment studies the Weight Lifting Exercise dataset available from http://groupware.les.inf.puc-rio.br/har and its purpose is to predict the manner of the weight lifting based on measurements. There are 5 manners of weight lifting described the "classe" variable and it has 5 values: A, B, C, D and E. A corresponds to the correct way of weight lifting and the rest describe typical mistakes in weight lifting.
+
+## Data processing
+
+The data is contained in two files that are downloaded from the weblinks given in the assignment into the working directory
+
+```{r}
+if (!file.exists("pml-training.csv")) {
+    url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(url, "pml-training.csv", method="curl")
+}
+if (!file.exists("pml-testing.csv")) {
+    url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(url, "pml-testing.csv", method="curl")
+}
+```
+
+The file "pml-training.csv" contains the data based on which the model to predict the outcome is built and tested on. The model is then used to predict the outcomes of the cases in the file "pml-testing.csv". The datasets contain missing values of 3 types: NA, #Div/0! and empty cells. Since we do not know anything more about these types, they are all made NAs while reading in the files into R
+
+```{r, cache=TRUE}
+training <- read.csv("pml-training.csv", stringsAsFactors=FALSE, na.strings=c("NA", "", "#DIV/0!"))
+testing <- read.csv("pml-testing.csv", stringsAsFactors=FALSE, na.strings=c("NA", "", "#DIV/0!"))
+```
+
+Next the structure of missing values for each variable needs to be investigated
+
+```{r}
+missingVals <- is.na(training)
+missColSums <- colSums(missingVals)
+table(missColSums)
+```
+
+The training dataset contains `{r} nrow(training)` observations. Thus it is seen that the variables with missing values have almost all of their observations missing and the likely course of action is to impute these variables completely from the dataset. Before doing the structure of the missing values is analyzed further using the variable "new_window" with two values: "yes" and "no"
+
+```{r}
+training_yes <- subset(training, new_window=="yes")
+training_no <- subset(training, new_window=="no")
+table(colSums(is.na(training_yes)))
+nrow(training_yes)
+table(colSums(is.na(training_no)))
+nrow(training_no)
+```
+
+This shows that the "no"-subset has only two types of variables: ones with all observations and ones with all missing values. The "yes"-subset has a lot more structure. On the other hand the "yes"-subset is much smaller containing only `r nrow(training_yes)` observations compare to `r nrow(training_no)` observations in "no"-subset. Looking at the missing value structure of the testing dataset
+
+```{r}
+table(colSums(is.na(testing)))
+testing$new_window
+```
+
+All the testing cases belong to "no"-subset and have the same structure of missing values as the "no"-subset of the training dataset. This is confirmed by comparing amounts of missing values for a variable in the training "no"-subset and testing dataset
+
+```{r}
+missing_vals_tr_no <- colSums(is.na(training_no))
+missing_vals_test <- colSums(is.na(testing))
+sum(missing_vals_tr_no==0 & missing_vals_test==0)
+names_tr_no <- names(training_no)[missing_vals_tr_no==0]
+names_test <- names(testing)[missing_vals_test==0]
+length(names_tr_no)
+length(names_test)
+sum(names_tr_no==names_test)
+names_tr_no[names_tr_no!=names_test]
+names_test[names_tr_no!=names_test]
+```
+
+Thus the variables with no missing values are the same in both datasets. The only difference is the classe variable in the training set and problem_id in the testing set. The 60 variables with no missing values are kept for further analysis and in the training dataset only the "no"-subset is kept for analysis. The "yes"-subset contains only `r nrow(training_yes)` cases compared to the `r nrow(training_no)` cases in the "no"-subset. Thus the "yes"-subset would not have a big statistical significance, unless the values it contains are somehow outliers which might result to distortions of results. Keeping the "no"-subset only keeps also with the structure of the testing dataset.
+
+```{r}
+training_no <- training_no[, names_tr_no]
+testing <- testing[, names_test]
+```
+
+Some of the variable in the beginning of the data frames are not useful for predicting the results
+
+```{r}
+head(training_no[, 1:10])
+```
+
+The first 7 variables from X to num_window are not useful for predicting, so they are removed
+
+```{r}
+training_no <- training_no[, -(1:7)]
+testing <- testing[, -(1:7)]
+```
+
+The variable to be predicted "classe" needs to be changed into a factor and the number of variables left is
+
+```{r}
+training_no$classe <- as.factor(training_no$classe)
+ncol(training_no)
+```
+
+
+## Feature selection
+
+The model has a large number of variables, `r ncol(training_no)-1`, for prediction. However, a lot of these variables are not so good for prediction. In the experiment correct way of biceps curl and four typical mistakes are measured while an instructor supervises the movement. The weight is also small so that it does not cause any problems. Therefore it is expected that the movements in the certain category should be close to the mean for a variable that measures well the movement. Having large numbers of outliers, points beyond the whiskers in the box-whisker plot, could be an indication of problems with the variable escpecially if they are on one side only. Having some outliers is not surprising since there are `r nrow(training_no)` observations in the final training dataset being used, but only variables with small amounts of outliers are chosen here.
+
+Start by loading the necessary libraries
+
+```{r}
+library(lattice)
+library(ggplot2)
+library(caret)
+library(randomForest)
+```
+
+The prediction variables left are of 4 different types: Euler angles, accelerations, gyros and magnets. These are given in different scales so they are plotted within these groups. Starting with box-plots of Euler angles
+
+```{r, cache=TRUE, fig.width=8}
+featurePlot(x=training_no[,grepl("roll", names(training_no)) | grepl("pitch", names(training_no)) | grepl("yaw", names(training_no))], y=training_no$classe, plot="box")
+```
+
+From these yaw_dumbbell and roll_belt do not contain outliers, roll_arm contains a few, so they are chosen from angles. The rest of the angles contain more outliers.
+
+Next the total accelarations
+
+```{r, cache=TRUE}
+featurePlot(x=training_no[,grepl("total", names(training_no))], y=training_no$classe, plot="box")
+```
+
+From these total_accel_belt does not have outliers and total_accel_dumbbell contains a few so they are chosen for prediction variables.
+
+Next acceleration components
+
+```{r, cache=TRUE, fig.width=8}
+featurePlot(x=training_no[,grepl("accel", names(training_no)) & !grepl("total", names(training_no))], y=training_no$classe, plot="box")
+```
+
+From these accel_dumbbell_y, accel_dumbbell_z, accel_forearm_z, accel_belt_y, accel_belt_z, accel_arm_x and accel_arm_y are chosen.
+
+There are still gyros and magnet variables. However, these turned out to contain lots of outliers in every case, so they were not plotted. The following codes would produce the plots for these variables
+
+```{r, cache=TRUE, fig.width=8, fig.keep='none'}
+featurePlot(x=training_no[,grepl("gyros", names(training_no))], y=training_no$classe, plot="box")
+```
+
+```{r, cache=TRUE, fig.width=8, fig.keep='none'}
+featurePlot(x=training_no[,grepl("magnet", names(training_no))], y=training_no$classe, plot="box")
+```
+
+```{r, cache=TRUE, fig.keep='none'}
+featurePlot(x=training_no[,grepl("gyros_arm", names(training_no)) | grepl("gyros_belt", names(training_no))], y=training_no$classe, plot="box")
+```
+
+Now the training and testing datasets are restricted to the chosen variables and including the classe and problem_id
+
+```{r}
+train2 <- training_no[, c("yaw_dumbbell", "roll_arm", "roll_belt", "total_accel_dumbbell", "total_accel_belt", "accel_dumbbell_y", "accel_dumbbell_z", "accel_forearm_z", "accel_belt_y", "accel_belt_z", "accel_arm_x", "accel_arm_y", "classe")]
+test2 <- testing[, c("yaw_dumbbell", "roll_arm", "roll_belt", "total_accel_dumbbell", "total_accel_belt", "accel_dumbbell_y", "accel_dumbbell_z", "accel_forearm_z", "accel_belt_y", "accel_belt_z", "accel_arm_x", "accel_arm_y", "problem_id")]
+```
+
+For further confirmation a pair plot is formed of the chosen variables in the training data. This is a big plot that is better looked at in a large screen
+
+```{r, cache=TRUE, fig.width=18, fig.height=18}
+featurePlot(x=train2[, 1:(ncol(train2)-1)], y=train2$classe, plot="pairs", auto.key=list(columns=5))
+```
+
+It is seen that there is a lot of splitting of data. However, the alternative E tends wander everywhere in the splitted sets. Nevertheless model fitting is tried with these variables
+
+## Fitting a model
+
+Since there is no knowledge of which variables are important, the random forest is fitted with 5-fold cross validation used automatically in the train-function
+
+```{r, cache=TRUE}
+set.seed(8421)
+fitControl <- trainControl(method="cv", number=5, classProbs=TRUE)
+rfFit1 <- train(classe~yaw_dumbbell+roll_arm+roll_belt+total_accel_dumbbell+total_accel_belt+accel_dumbbell_y+accel_dumbbell_z+accel_forearm_z+accel_belt_y+accel_belt_z+accel_arm_x+accel_arm_y, data=train2, method="rf", trControl=fitControl)
+rfFit1
+```
+
+Looking at the results: the resample accuracies whose average produces the model accuracy, confusion matrix for the training data and variable importance
+
+```{r}
+rfFit1$resample
+confusionMatrix(rfFit1)
+varImp(rfFit1)
+dotPlot(varImp(rfFit1))
+```
+
+The variable importance order tells in which order the variables are being dropped in case that is necessary. Some of the steps are skipped although they were analyzed. Here moving on to the interesting parts
+
+```{r, cache=TRUE}
+set.seed(8421)
+fitControl <- trainControl(method="cv", number=5, classProbs=TRUE)
+rfFit4 <- train(classe~yaw_dumbbell+roll_arm+roll_belt+accel_dumbbell_y+accel_dumbbell_z+accel_forearm_z+accel_belt_z+accel_arm_x+accel_arm_y, data=train2, method="rf", trControl=fitControl)
+rfFit4
+```
+
+This shows that dropping unimportant variables has actually increased accuracy from 0.9549 to 0.9567 when dropping three of the variables, so they were not very important.
+
+```{r}
+rfFit4$resample
+confusionMatrix(rfFit4)
+varImp(rfFit4)
+```
+
+Dropping the next variable produces an interesting result
+
+```{r, cache=TRUE}
+set.seed(8421)
+fitControl <- trainControl(method="cv", number=5, classProbs=TRUE)
+rfFit5 <- train(classe~yaw_dumbbell+roll_arm+roll_belt+accel_dumbbell_y+accel_dumbbell_z+accel_forearm_z+accel_belt_z+accel_arm_x, data=train2, method="rf", trControl=fitControl)
+rfFit5
+```
+
+The accuracy has decreased by dropping a variable, but the variable importance order has changed
+
+```{r}
+rfFit5$resample
+confusionMatrix(rfFit5)
+varImp(rfFit5)
+```
+
+This shows an example of why one should drop only one variable at a time. The accuracy gives also the expected out of sample error as a complement of the accuracy, so for rfFit4 the expected out of sample error is 1-0.9567=0.0433 and for rfFit5 it is 1-0.9514=0.0486 so it is around 4-5%.
+
+## Predictions for the testing data
+
+The predictions are calculated for the models in the following way
+
+```{r}
+pred_test4 <- predict(rfFit4, test2)
+pred_test4 <- as.character(pred_test4)
+pred_test5 <- predict(rfFit5, test2)
+pred_test5 <- as.character(pred_test5)
+```
+
+Since the results are separately submitted, they are not presented here. The answers are written to the files using the function provided
+
+```{r, results='hide'}
+pml_write_files = function(x){
+    n = length(x)
+    for(i in 1:n) {
+        filename = paste0("problem_id_", i, ".txt")
+        write.table(x[i], file=filename,quote=FALSE, row.names=FALSE,
+                    col.names=FALSE)
+    }
+}
+pml_write_files(pred_test)
+```
+
+The produced error in writing to file is deliberate, since the number has been left out in pred_test.
+
+The expected error rate for the models are 4-5% so roughly 1 out of 20 times the prediction is wrong. Indeed the testing data submission gave for both rfFit4 and rfFit5 19 out of 20 correct and 1 out of 20 incorrect, but the incorrect prediction was for different test case. This shows the importance of fitting multiple models to improve accuracy.
